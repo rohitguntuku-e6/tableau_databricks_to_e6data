@@ -1,4 +1,4 @@
-# tableau-dbr-to-e6
+# tableau_databricks_to_e6data
 
 Command-line tools for migrating Tableau content from Databricks to
 [e6data](https://www.e6data.com/), which speaks the PostgreSQL wire protocol.
@@ -36,8 +36,8 @@ If not, install it:
 A virtual environment keeps these dependencies isolated from the system Python.
 
 ```bash
-git clone https://github.com/rohitguntuku-e6/tableau-dbr-to-e6.git
-cd tableau-dbr-to-e6
+git clone https://github.com/rohitguntuku-e6/tableau_databricks_to_e6data.git
+cd tableau_databricks_to_e6data
 
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate

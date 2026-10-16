@@ -235,7 +235,7 @@ def main():
     cfg = load_cfg(args)
     if "/" in str(cfg.get("dbname", "")):
         raise SystemExit("Database name format is wrong: %r. Pass only the catalog name "
-                         "(e.g. 'snap', not 'cluster-name/snap'); the cluster name belongs in --username."
+                         "(e.g. 'catalog_name', not 'cluster-name/catalog_name'); the cluster name belongs in --username."
                          % cfg["dbname"])
     log = process(args.in_path, args.out_path, cfg, report_only=args.report_only)
 

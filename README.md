@@ -58,13 +58,25 @@ Rewrites the connection definitions in a `.twb` (Tableau Workbook), `.twbx` (Tab
 Packaged Workbook), `.tds` (Tableau Data Source) or `.tdsx` (Tableau Packaged Data
 Source), leaving all Custom SQL unchanged.
 
-For each `<named-connection>` containing `<connection class='databricks'>` the script:
+For each `<named-connection>` containing `<connection class='databricks'>` or
+`<connection class='postgres'>` the script:
 
-- rebuilds the inner connection as PostgreSQL
+- rebuilds the inner connection as PostgreSQL with the supplied server, database
+  and username
 - renames the connection identifier from `databricks.*` to `postgres.*` and repoints
   every `<relation connection=...>` reference to match, removing the need for Replace
   Data Source or any field re-mapping
 - sets connection capability flags so Tableau inlines its queries
+
+Because existing PostgreSQL connections are rebuilt as well, a workbook that has
+already been converted can be run through the script again to change its connection
+details. For example, a workbook converted with the wrong database name is fixed by
+re-running the script on the converted file with the correct `--dbname`. The result is
+identical to converting the original Databricks workbook directly.
+
+`--dbname` takes the catalog name only (for example `catalog_name`). A value containing
+`/`, such as `cluster-name/catalog_name`, is rejected; the cluster name belongs in
+`--username`.
 
 ### Usage
 
@@ -73,7 +85,7 @@ python twb_dbr_to_e6_conn_only_tdsx_handle.py \
     --in workbook.twbx \
     --out workbook_migrated.twbx \
     --server my-host.example.com \
-    --dbname mydb \
+    --dbname catalog_name \
     --username myuser
 ```
 
@@ -85,6 +97,7 @@ Connection parameters may also be supplied from a JSON file with `--config`.
 | `--out` | Output file (required) |
 | `--config` | JSON file of connection parameters |
 | `--server`, `--port`, `--dbname`, `--username`, `--sslmode` | e6data connection details |
+| `--match-class` | Comma-separated connection classes to rebuild (default `databricks,postgres`); pass `databricks` to leave existing PostgreSQL connections untouched |
 
 ## `tab_publish.py`
 

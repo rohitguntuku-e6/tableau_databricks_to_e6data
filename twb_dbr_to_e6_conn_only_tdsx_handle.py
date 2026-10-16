@@ -9,10 +9,16 @@ One surgical operation on the raw .twb text (never an XML reparse, so the
 stay byte-identical):
 
   CONNECTION SWAP — each <named-connection> whose inner <connection
-  class='databricks'> is rebuilt as a clean PostgreSQL <connection>. The
-  named-connection `name` id is renamed databricks.* -> postgres.* (and every
+  class='databricks'> OR class='postgres' is rebuilt as a clean PostgreSQL
+  <connection> with the supplied server/dbname/username. The named-connection
+  `name` id is renamed databricks.* -> postgres.* (and every
   <relation connection=...> reference is repointed to match), so no
   Replace-Data-Source, no field re-mapping, no suffix bug.
+
+  Matching postgres connections too means a workbook that was already converted
+  (or converted with the wrong dbname) can simply be run through again; the
+  user does not need to know whether the file is still on Databricks.
+  --match-class takes a comma-separated list (default: databricks,postgres).
 
 Usage:
     python twb_dbr_to_e6_conn_only.py --in in.twb[x] --out out.twb[x]
@@ -28,7 +34,7 @@ import zipfile
 
 
 DEFAULT_CFG = {
-    "match_class": "databricks",
+    "match_class": "databricks,postgres",   # comma-separated classes to rebuild
     "class": "postgres",
     "server": "YOUR_E6_PG_HOST",
     "port": "5432",
@@ -76,16 +82,25 @@ def _build_pg_connection(cfg):
     return "<connection %s />" % attrs
 
 
+def _match_classes(cfg):
+    mc = cfg.get("match_class") or "databricks"
+    if isinstance(mc, str):
+        mc = [c.strip() for c in mc.split(",") if c.strip()]
+    return list(mc)
+
+
 def swap_connections(text, cfg, log):
-    count = [0]
-    token = "class='%s'" % cfg["match_class"]
+    classes = _match_classes(cfg)
+    count = {c: 0 for c in classes}
     caption = cfg.get("caption") or cfg["server"]
     prefix = cfg.get("rename_prefix")
     mapping = {}
 
     def _sub(m):
         block = m.group(0)
-        if token not in block:
+        matched = next((c for c in classes
+                        if re.search(r"<connection\b[^>]*\bclass='%s'" % re.escape(c), block)), None)
+        if matched is None:
             return block
         nm = re.search(r"<named-connection\b[^>]*\bname='([^']*)'", block)
         if not nm:
@@ -93,7 +108,7 @@ def swap_connections(text, cfg, log):
         old = nm.group(1)
         new = (prefix + "." + old.split(".", 1)[1]) if (prefix and "." in old) else old
         mapping[old] = new
-        count[0] += 1
+        count[matched] += 1
         return ("<named-connection caption='{cap}' name='{name}'>\n"
                 "            {conn}\n"
                 "          </named-connection>").format(
@@ -108,18 +123,23 @@ def swap_connections(text, cfg, log):
             refs += new.count("'%s'" % old)
             new = new.replace("'%s'" % old, "'%s'" % newn)
 
-    log.append("Repointed %d named-connection(s) class='%s' -> '%s' (%s)"
-               % (count[0], cfg["match_class"], cfg["class"], cfg["server"]))
-    if prefix:
+    total = sum(count.values())
+    for c in classes:
+        if count[c]:
+            log.append("Rebuilt %d named-connection(s) class='%s' -> '%s' (server=%s dbname=%s)"
+                       % (count[c], c, cfg["class"], cfg["server"], cfg["dbname"]))
+    if prefix and refs:
         log.append("Renamed connection ids -> '%s.*' and updated %d relation reference(s)" % (prefix, refs))
-    if cfg.get("disable_temp_tables", True):
+    if total and cfg.get("disable_temp_tables", True):
         log.append("Injected CAP_CREATE_TEMP_TABLES='no' (+SELECT_INTO,+INDEX_TEMP_TABLES) — temp tables disabled")
-    if count[0] == 0:
-        log.append("WARNING: no <named-connection> with class='%s' found" % cfg["match_class"])
-    stray = len(re.findall(r"<connection\s[^>]*class='%s'" % cfg["match_class"], new))
-    if stray:
-        log.append("WARNING: %d stray '%s' <connection>(s) remain outside a named-connection"
-                   % (stray, cfg["match_class"]))
+    if total == 0:
+        log.append("WARNING: no <named-connection> with class in %s found" % classes)
+    for c in classes:
+        if c == cfg["class"]:
+            continue   # the rebuilt connections legitimately carry the target class
+        stray = len(re.findall(r"<connection\s[^>]*class='%s'" % re.escape(c), new))
+        if stray:
+            log.append("WARNING: %d stray '%s' <connection>(s) remain outside a named-connection" % (stray, c))
     return new
 
 
@@ -192,13 +212,14 @@ def load_cfg(args):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Migrate a Tableau workbook's CONNECTIONS ONLY from Databricks to e6data (PostgreSQL). Custom SQL is left unchanged.")
+        description="Rewrite a Tableau workbook's CONNECTIONS ONLY (Databricks or an existing PostgreSQL connection) to e6data (PostgreSQL). Custom SQL is left unchanged.")
     ap.add_argument("--in", dest="in_path", required=True, help="input .twb/.twbx/.tds/.tdsx")
     ap.add_argument("--out", dest="out_path", help="output .twb/.twbx/.tds/.tdsx")
     ap.add_argument("--config", help="JSON connection-param file")
     for k in ("server", "port", "dbname", "username", "sslmode", "authentication",
               "caption", "match_class"):
-        ap.add_argument("--%s" % k.replace("_", "-"), dest=k, default=None, help="override %s" % k)
+        ap.add_argument("--%s" % k.replace("_", "-"), dest=k, default=None,
+                        help="override %s" % k + (" (comma-separated; default databricks,postgres)" if k == "match_class" else ""))
     ap.add_argument("--allow-temp-tables", action="store_true",
                     help="do NOT inject the temp-table-disabling capability (disabled by default)")
     ap.add_argument("--rename-prefix", dest="rename_prefix", default=None,
@@ -212,6 +233,10 @@ def main():
         raise SystemExit("--out is required unless --report-only")
 
     cfg = load_cfg(args)
+    if "/" in str(cfg.get("dbname", "")):
+        raise SystemExit("Database name format is wrong: %r. Pass only the catalog name "
+                         "(e.g. 'snap', not 'cluster-name/snap'); the cluster name belongs in --username."
+                         % cfg["dbname"])
     log = process(args.in_path, args.out_path, cfg, report_only=args.report_only)
 
     print("=" * 72)
